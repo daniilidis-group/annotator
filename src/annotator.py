@@ -47,22 +47,41 @@ class ZoomQGraphicsView(QGraphicsView):
         self.translate(delta.x(), delta.y())
 
 class RosWorker(QThread):
-    signal = pyqtSignal(QImage)
-    def __init__(self, app):
+    def __init__(self, main_gui, views):
         QThread.__init__(self, parent=None)
-        self.bridge = CvBridge()
-        self.app = app
+        self.main_gui = main_gui
+        self.views = views
     def run(self):
         def __del__(self):
             self.wait()
         rospy.init_node('annotator', disable_signals=True)
-        self.sub = rospy.Subscriber('/cam_sync/cam0/image_raw', Image, self.img_callback);
+        for v in self.views:
+            v.sub = rospy.Subscriber(v.topic, Image, v.img_callback);
         print "finished subscribing to img, spinning now"
-        self.signal.connect(self.app.handle_img_update)
         rospy.spin()
 
+
+class ViewWidget(QWidget):
+    signal = pyqtSignal(QImage)
+    def __init__(self, parent=None, topic = ""):
+        QWidget.__init__(self, parent)
+        self.bridge = CvBridge()
+        self.topic = topic
+        self.gv = ZoomQGraphicsView()
+        self.scene = QGraphicsScene(self)
+        self.gv.setScene(self.scene) 
+        self.gv.setRenderHints(QPainter.Antialiasing | QPainter.SmoothPixmapTransform)
+        self.gv.fitInView(self.scene.sceneRect())
+        lay = QHBoxLayout(self)
+        lay.addWidget(self.gv)
+        self.p_item = self.scene.addPixmap(QPixmap("foo.png"))
+        self.signal.connect(self.handle_img_update)
+
+    def handle_img_update(self, img):
+        self.p_item.setPixmap(QPixmap.fromImage(img))
+
     def img_callback(self, img):
-        print 'got image message: ', img.header
+        print self.topic, ' got image message: '
         try:
             cv_image = self.bridge.imgmsg_to_cv2(img, "bgr8")
         except CvBridgeError as e:
@@ -72,40 +91,19 @@ class RosWorker(QThread):
         bytesPerLine = 3 * width
         q_img = QImage(cv_image.data, width, height, bytesPerLine, QImage.Format_RGB888)
         self.signal.emit(q_img)
-        print 'done updating image!'
-
-class Widget(QWidget):
-    def __init__(self, parent=None):
-        QWidget.__init__(self, parent)
+    
+        
+class MainWidget(QWidget):
+    def __init__(self, topics):
+        QWidget.__init__(self, None)
         print "starting ros worker thread!"
-        self.rosworker = RosWorker(app = self)
+        self.views = [ViewWidget(self, t) for t in topics]
+        self.rosworker = RosWorker(main_gui = self, views = self.views)
         self.rosworker.start()
-        self.btn = QPushButton("Add Line")
-        self.gv = ZoomQGraphicsView()
-        self.scene = QGraphicsScene(self)
-        self.gv.setScene(self.scene) 
-        self.gv.setRenderHints(QPainter.Antialiasing | QPainter.SmoothPixmapTransform)
-        self.gv.fitInView(self.scene.sceneRect())
-
-        self.scene2 = QGraphicsScene(self)
-        self.gv2 = ZoomQGraphicsView()
-        self.gv2.setScene(self.scene2) 
-        self.gv2.setRenderHints(QPainter.Antialiasing | QPainter.SmoothPixmapTransform)
-        self.gv2.fitInView(self.scene2.sceneRect())
-                
-        lay = QHBoxLayout(self)
-        lay.addWidget(self.btn)
-        lay.addWidget(self.gv)
-        lay.addWidget(self.gv2)
-
-        print ("adding lena!")
-        self.p_item1 = self.scene.addPixmap(QPixmap("foo.png"))
-        self.p_item2 = self.scene2.addPixmap(QPixmap("foo.png"))
-        self.btn.clicked.connect(self.add_line)
-
-
-    def handle_img_update(self, img):
-        self.p_item1.setPixmap(QPixmap.fromImage(img))
+        lay = QGridLayout(self)
+        ncols = 2
+        for i in range(0, len(self.views)):
+            lay.addWidget(self.views[i], i/ncols, i % ncols)
 
 
     def add_line(self):
@@ -122,6 +120,10 @@ class Widget(QWidget):
 if __name__ == '__main__':
     print ("starting up")
     app = QApplication(sys.argv)
-    w = Widget()
+    w = MainWidget(["/cam_sync/cam0/image_raw",
+                    "/cam_sync/cam1/image_raw",
+                    "/cam_sync/cam2/image_raw",
+                    "/cam_sync/cam3/image_raw"
+    ])
     w.show()
     sys.exit(app.exec_())
