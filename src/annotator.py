@@ -8,6 +8,7 @@
 import sys
 import roslib
 import rospy
+import ctypes
 
 from PyQt4.QtCore import *
 from PyQt4.QtGui import *
@@ -15,10 +16,19 @@ from threading import Thread
 from cv_bridge import CvBridge, CvBridgeError
 
 from sensor_msgs.msg import Image
+from bird_recording.msg import RectList
+from bird_recording.msg import Rect
 
 class ZoomQGraphicsView(QGraphicsView):
-    def __init__ (self, parent=None):
+    rectChanged = pyqtSignal(QRect)
+    def __init__ (self, listener, parent=None):
         super(ZoomQGraphicsView, self).__init__ (parent)
+        self.rectChanged.connect(listener.rect_callback)
+
+        self.rubberBand = QRubberBand(QRubberBand.Rectangle, self)
+        self.setMouseTracking(True)
+        self.origin = QPoint()
+        self.changeRubberBand = False
 
     def wheelEvent(self, event):
         # Zoom Factor
@@ -46,6 +56,24 @@ class ZoomQGraphicsView(QGraphicsView):
         delta = newPos - oldPos
         self.translate(delta.x(), delta.y())
 
+    def mousePressEvent(self, event):
+        self.origin = event.pos()
+        self.rubberBand.setGeometry(QRect(self.origin, QSize()))
+        self.rectChanged.emit(self.rubberBand.geometry())
+        self.rubberBand.show()
+        self.changeRubberBand = True
+        QGraphicsView.mousePressEvent(self, event)
+
+    def mouseMoveEvent(self, event):
+        if self.changeRubberBand:
+            self.rubberBand.setGeometry(QRect(self.origin, event.pos()).normalized())
+            self.rectChanged.emit(self.rubberBand.geometry())
+        QGraphicsView.mouseMoveEvent(self, event)
+
+    def mouseReleaseEvent(self, event):
+        self.changeRubberBand = False
+        QGraphicsView.mouseReleaseEvent(self, event)
+
 class RosWorker(QThread):
     def __init__(self, main_gui, views):
         QThread.__init__(self, parent=None)
@@ -57,6 +85,8 @@ class RosWorker(QThread):
         rospy.init_node('annotator', disable_signals=True)
         for v in self.views:
             v.sub = rospy.Subscriber(v.topic, Image, v.img_callback);
+            v.rectPub = rospy.Publisher(v.topic + "/rect", RectList, queue_size=1)
+            v.maskPub = rospy.Publisher(v.topic + "/mask", Image, queue_size=1)
         print "finished subscribing to img, spinning now"
         rospy.spin()
 
@@ -67,7 +97,7 @@ class ViewWidget(QWidget):
         QWidget.__init__(self, parent)
         self.bridge = CvBridge()
         self.topic = topic
-        self.gv = ZoomQGraphicsView()
+        self.gv = ZoomQGraphicsView(self)
         self.scene = QGraphicsScene(self)
         self.gv.setScene(self.scene) 
         self.gv.setRenderHints(QPainter.Antialiasing | QPainter.SmoothPixmapTransform)
@@ -79,11 +109,12 @@ class ViewWidget(QWidget):
 
     def handle_img_update(self, img):
         self.p_item.setPixmap(QPixmap.fromImage(img))
+        self.gv.fitInView(self.scene.sceneRect())
 
     def img_callback(self, img):
-        print self.topic, ' got image message: '
+        self.img = img
         try:
-            cv_image = self.bridge.imgmsg_to_cv2(img, "bgr8")
+            cv_image = self.bridge.imgmsg_to_cv2(img, "rgb8")
         except CvBridgeError as e:
             print(e)
             return
@@ -91,6 +122,15 @@ class ViewWidget(QWidget):
         bytesPerLine = 3 * width
         q_img = QImage(cv_image.data, width, height, bytesPerLine, QImage.Format_RGB888)
         self.signal.emit(q_img)
+
+    def rect_callback(self, qr):
+        print self.topic, " got rect!", str(qr)
+        rl = RectList()
+        rl.header = self.img.header
+        r = Rect(x=qr.topLeft().x(), y=qr.topLeft().y(), width=qr.width(), height=qr.height())
+        print str(r)
+        rl.rectangles.append(r)
+        self.rectPub.publish(rl)
     
         
 class MainWidget(QWidget):
@@ -101,7 +141,7 @@ class MainWidget(QWidget):
         self.rosworker = RosWorker(main_gui = self, views = self.views)
         self.rosworker.start()
         lay = QGridLayout(self)
-        ncols = 2
+        ncols = 4
         for i in range(0, len(self.views)):
             lay.addWidget(self.views[i], i/ncols, i % ncols)
 
@@ -123,7 +163,8 @@ if __name__ == '__main__':
     w = MainWidget(["/cam_sync/cam0/image_raw",
                     "/cam_sync/cam1/image_raw",
                     "/cam_sync/cam2/image_raw",
-                    "/cam_sync/cam3/image_raw"
+                    "/cam_sync/cam3/image_raw",
+                    "/cam_sync/cam4/image_raw"
     ])
     w.show()
     sys.exit(app.exec_())
