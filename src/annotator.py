@@ -20,15 +20,19 @@ from bird_recording.msg import RectList
 from bird_recording.msg import Rect
 
 class ZoomQGraphicsView(QGraphicsView):
-    rectChanged = pyqtSignal(QRect)
-    def __init__ (self, listener, parent=None):
+    def __init__ (self, listener, pixmap, parent=None):
         super(ZoomQGraphicsView, self).__init__ (parent)
-        self.rectChanged.connect(listener.rect_callback)
-
+        self.pixmap = pixmap
+        # the rubber band is for drawing the rectangle
+        # while the mouse is pressed down.
         self.rubberBand = QRubberBand(QRubberBand.Rectangle, self)
         self.setMouseTracking(True)
         self.origin = QPoint()
         self.changeRubberBand = False
+        # list of rectangles created
+        self.rectangles = []
+        # top left corner of current rectangle
+        self.topLeft = QPoint(-1, -1)
 
     def wheelEvent(self, event):
         # Zoom Factor
@@ -56,23 +60,52 @@ class ZoomQGraphicsView(QGraphicsView):
         delta = newPos - oldPos
         self.translate(delta.x(), delta.y())
 
+    def makeRect(self, rect):
+        r = QGraphicsRectItem(rect, self.pixmap)
+        r.setPen(QPen(Qt.green, 3))
+        r.setFlag(QGraphicsItem.ItemIsMovable, False)
+        r.setFlag(QGraphicsItem.ItemIsSelectable, False)
+        return (r)
+
     def mousePressEvent(self, event):
-        self.origin = event.pos()
-        self.rubberBand.setGeometry(QRect(self.origin, QSize()))
-        self.rectChanged.emit(self.rubberBand.geometry())
-        self.rubberBand.show()
-        self.changeRubberBand = True
+        if event.button() == Qt.LeftButton:
+            # star the rubber band
+            self.origin = event.pos()
+            self.rubberBand.setGeometry(QRect(self.origin, QSize()))
+            self.rubberBand.show()
+            self.changeRubberBand = True
+            
+            if self.topLeft == QPoint(-1, -1):
+                self.topLeft = self.mapToScene(event.pos())
+        if event.button() == Qt.RightButton:
+            spos = self.mapToScene(event.pos())
+            d = 8 # number of pixels in scene
+            # pick rectangles close to mouse position
+            to_remove = [r for r in self.rectangles if
+                         r.rect().adjusted(-d, -d, d, d).contains(spos)
+                         and  not r.rect().adjusted(d, d, -d, -d).contains(spos)]
+            map(lambda x:self.scene().removeItem(x), to_remove)
+            self.rectangles = [x for x in self.rectangles if x not in to_remove]
+            print 'rectangles removed: ', len(to_remove)
         QGraphicsView.mousePressEvent(self, event)
 
     def mouseMoveEvent(self, event):
         if self.changeRubberBand:
             self.rubberBand.setGeometry(QRect(self.origin, event.pos()).normalized())
-            self.rectChanged.emit(self.rubberBand.geometry())
         QGraphicsView.mouseMoveEvent(self, event)
 
     def mouseReleaseEvent(self, event):
-        self.changeRubberBand = False
+        if event.button() == Qt.LeftButton:
+            self.changeRubberBand = False
+            self.rubberBand.hide()
+            if not self.topLeft == QPoint(-1, -1):
+                r = QRectF(self.topLeft, self.mapToScene(event.pos()))
+                self.rectangles.append(self.makeRect(r))
+                self.topLeft = QPoint(-1, -1)
+
         QGraphicsView.mouseReleaseEvent(self, event)
+        
+
 
 class RosWorker(QThread):
     def __init__(self, main_gui, views):
@@ -97,14 +130,14 @@ class ViewWidget(QWidget):
         QWidget.__init__(self, parent)
         self.bridge = CvBridge()
         self.topic = topic
-        self.gv = ZoomQGraphicsView(self)
         self.scene = QGraphicsScene(self)
+        self.p_item = self.scene.addPixmap(QPixmap("foo.png"))
+        self.gv = ZoomQGraphicsView(self, self.p_item)
         self.gv.setScene(self.scene) 
         self.gv.setRenderHints(QPainter.Antialiasing | QPainter.SmoothPixmapTransform)
         self.gv.fitInView(self.scene.sceneRect())
         lay = QHBoxLayout(self)
         lay.addWidget(self.gv)
-        self.p_item = self.scene.addPixmap(QPixmap("foo.png"))
         self.signal.connect(self.handle_img_update)
 
     def handle_img_update(self, img):
