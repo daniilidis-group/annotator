@@ -19,21 +19,9 @@ from sensor_msgs.msg import Image
 from bird_recording.msg import RectList
 from bird_recording.msg import Rect
 
-class ZoomQGraphicsView(QGraphicsView):
-    def __init__ (self, listener, pixmap, parent=None):
-        super(ZoomQGraphicsView, self).__init__ (parent)
-        self.pixmap = pixmap
-        # the rubber band is for drawing the rectangle
-        # while the mouse is pressed down.
-        self.rubberBand = QRubberBand(QRubberBand.Rectangle, self)
-        self.setMouseTracking(True)
-        self.origin = QPoint()
-        self.changeRubberBand = False
-        # list of rectangles created
-        self.rectangles = []
-        # top left corner of current rectangle
-        self.topLeft = QPoint(-1, -1)
-
+class ZoomGraphicsView(QGraphicsView):
+    def __init__ (self, parent=None):
+        super(ZoomGraphicsView, self).__init__ (parent)
     def wheelEvent(self, event):
         # Zoom Factor
         zoomInFactor = 1.25
@@ -59,6 +47,21 @@ class ZoomQGraphicsView(QGraphicsView):
         # Move scene to old position
         delta = newPos - oldPos
         self.translate(delta.x(), delta.y())
+
+class AnnotationGraphicsView(ZoomGraphicsView):
+    def __init__ (self, listener, pixmap, parent=None):
+        super(AnnotationGraphicsView, self).__init__ (parent)
+        self.pixmap = pixmap
+        # the rubber band is for drawing the rectangle
+        # while the mouse is pressed down.
+        self.rubberBand = QRubberBand(QRubberBand.Rectangle, self)
+        self.setMouseTracking(True)
+        self.origin = QPoint()
+        self.changeRubberBand = False
+        # list of rectangles created
+        self.rectangles = []
+        # top left corner of current rectangle
+        self.topLeft = QPoint(-1, -1)
 
     def makeRect(self, rect):
         r = QGraphicsRectItem(rect, self.pixmap)
@@ -132,10 +135,11 @@ class ViewWidget(QWidget):
         self.topic = topic
         self.scene = QGraphicsScene(self)
         self.p_item = self.scene.addPixmap(QPixmap("foo.png"))
-        self.gv = ZoomQGraphicsView(self, self.p_item)
+        self.gv = AnnotationGraphicsView(self, self.p_item)
         self.gv.setScene(self.scene) 
         self.gv.setRenderHints(QPainter.Antialiasing | QPainter.SmoothPixmapTransform)
         self.gv.fitInView(self.scene.sceneRect())
+        self.img = None
         lay = QHBoxLayout(self)
         lay.addWidget(self.gv)
         self.signal.connect(self.handle_img_update)
@@ -156,13 +160,17 @@ class ViewWidget(QWidget):
         q_img = QImage(cv_image.data, width, height, bytesPerLine, QImage.Format_RGB888)
         self.signal.emit(q_img)
 
-    def rect_callback(self, qr):
-        print self.topic, " got rect!", str(qr)
+    def done(self):
+        if not self.img:
+            print 'no image received yet'
+            return
         rl = RectList()
         rl.header = self.img.header
-        r = Rect(x=qr.topLeft().x(), y=qr.topLeft().y(), width=qr.width(), height=qr.height())
-        print str(r)
-        rl.rectangles.append(r)
+        for qri in self.gv.rectangles:
+            qr = qri.rect()
+            r = Rect(x=qr.topLeft().x(), y=qr.topLeft().y(), width=qr.width(), height=qr.height())
+            rl.rectangles.append(r)
+        print self.topic, ' publish rects: ', len(rl.rectangles)
         self.rectPub.publish(rl)
     
         
@@ -173,22 +181,30 @@ class MainWidget(QWidget):
         self.views = [ViewWidget(self, t) for t in topics]
         self.rosworker = RosWorker(main_gui = self, views = self.views)
         self.rosworker.start()
-        lay = QGridLayout(self)
+        self.viewsFrame = QFrame(self)
+        vlay = QGridLayout(self.viewsFrame)
         ncols = 4
         for i in range(0, len(self.views)):
-            lay.addWidget(self.views[i], i/ncols, i % ncols)
+            vlay.addWidget(self.views[i], i/ncols, i % ncols)
+        self.buttonsFrame = QFrame(self)
+        blay = QHBoxLayout(self.buttonsFrame)
+        
+        mlay = QVBoxLayout(self)
+        mlay.addWidget(self.viewsFrame)
+        mlay.addWidget(self.buttonsFrame)
+        
+        self.doneButton = QPushButton('Done', self.buttonsFrame)
+        self.quitButton = QPushButton('Quit', self.buttonsFrame)
+        blay.addWidget(self.doneButton)
+        blay.addWidget(self.quitButton)
+        
+        self.doneButton.clicked.connect(self.handleDone)
+        self.quitButton.clicked.connect(self.close)
 
-
-    def add_line(self):
-        p1 = self.p_item1.boundingRect().topLeft()
-        p2 = self.p_item1.boundingRect().center()
-        line = QGraphicsLineItem(QLineF(p1, p2), self.p_item1)
-        line.setPen(QPen(Qt.red, 5))
-        line.setFlag(QGraphicsItem.ItemIsMovable, True)
-        line.setFlag(QGraphicsItem.ItemIsSelectable, True)
-        self.gv.fitInView(self.scene.sceneRect())
-        self.gv2.fitInView(self.scene2.sceneRect())
-
+    def handleDone(self, tmp):
+        print "done!"
+        for v in self.views:
+            v.done()
 
 if __name__ == '__main__':
     print ("starting up")
