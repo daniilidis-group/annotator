@@ -8,7 +8,9 @@
 import sys
 import roslib
 import rospy
-import ctypes
+import cv2
+import numpy as np
+import message_filters
 
 from PyQt4.QtCore import *
 from PyQt4.QtGui import *
@@ -49,6 +51,7 @@ class ZoomGraphicsView(QGraphicsView):
         self.translate(delta.x(), delta.y())
 
 class AnnotationGraphicsView(ZoomGraphicsView):
+
     def __init__ (self, listener, pixmap, parent=None):
         super(AnnotationGraphicsView, self).__init__ (parent)
         self.pixmap = pixmap
@@ -97,6 +100,10 @@ class AnnotationGraphicsView(ZoomGraphicsView):
             self.rubberBand.setGeometry(QRect(self.origin, event.pos()).normalized())
         QGraphicsView.mouseMoveEvent(self, event)
 
+    def clearRectangles(self):
+        map(lambda x:self.scene().removeItem(x), self.rectangles)
+        self.rectangles = []
+
     def mouseReleaseEvent(self, event):
         if event.button() == Qt.LeftButton:
             self.changeRubberBand = False
@@ -119,13 +126,20 @@ class RosWorker(QThread):
         def __del__(self):
             self.wait()
         rospy.init_node('annotator', disable_signals=True)
+        subs = []
         for v in self.views:
-            v.sub = rospy.Subscriber(v.topic, Image, v.img_callback);
+            v.sub = message_filters.Subscriber(v.topic, Image)
+            subs.append(v.sub)
             v.rectPub = rospy.Publisher(v.topic + "/rect", RectList, queue_size=1)
             v.maskPub = rospy.Publisher(v.topic + "/mask", Image, queue_size=1)
+        self.sync = message_filters.TimeSynchronizer(subs, 10)
+        self.sync.registerCallback(self.syncCallback)
         print "finished subscribing to img, spinning now"
         rospy.spin()
-
+        
+    def syncCallback(self, *arg):
+        for i in range(0, len(self.views)):
+            self.views[i].img_callback(arg[i])
 
 class ViewWidget(QWidget):
     signal = pyqtSignal(QImage)
@@ -140,6 +154,7 @@ class ViewWidget(QWidget):
         self.gv.setRenderHints(QPainter.Antialiasing | QPainter.SmoothPixmapTransform)
         self.gv.fitInView(self.scene.sceneRect())
         self.img = None
+        self.isBusy = False
         lay = QHBoxLayout(self)
         lay.addWidget(self.gv)
         self.signal.connect(self.handle_img_update)
@@ -148,16 +163,20 @@ class ViewWidget(QWidget):
         self.p_item.setPixmap(QPixmap.fromImage(img))
         self.gv.fitInView(self.scene.sceneRect())
 
+        
     def img_callback(self, img):
+        """ img_callback is called directly by the ros worker theread"""
+        if self.isBusy:
+            return # still working on original image
         self.img = img
         try:
-            cv_image = self.bridge.imgmsg_to_cv2(img, "rgb8")
+            self.cv_img = self.bridge.imgmsg_to_cv2(img, "rgb8")
         except CvBridgeError as e:
             print(e)
             return
-        height, width, channel = cv_image.shape
+        height, width, channel = self.cv_img.shape
         bytesPerLine = 3 * width
-        q_img = QImage(cv_image.data, width, height, bytesPerLine, QImage.Format_RGB888)
+        q_img = QImage(self.cv_img.data, width, height, bytesPerLine, QImage.Format_RGB888).copy()
         self.signal.emit(q_img)
 
     def done(self):
@@ -166,13 +185,28 @@ class ViewWidget(QWidget):
             return
         rl = RectList()
         rl.header = self.img.header
+        mask = np.zeros(self.cv_img.shape[:2], np.uint8)
         for qri in self.gv.rectangles:
             qr = qri.rect()
-            r = Rect(x=qr.topLeft().x(), y=qr.topLeft().y(), width=qr.width(), height=qr.height())
+            x  = int(qr.topLeft().x())
+            y  = int(qr.topLeft().y())
+            w  = int(qr.width())
+            h  = int(qr.height())
+            mask[y:y+h, x:x+w] = 255
+            r = Rect(x=x, y=y, width=qr.width(), height=qr.height())
             rl.rectangles.append(r)
+        self.gv.clearRectangles()
         print self.topic, ' publish rects: ', len(rl.rectangles)
         self.rectPub.publish(rl)
-    
+        msg = self.bridge.cv2_to_imgmsg(mask, "mono8")
+        msg.header = self.img.header
+        self.maskPub.publish(msg)
+        self.img = None
+        self.isBusy = False
+
+    def stop(self):
+        self.isBusy = True
+
         
 class MainWidget(QWidget):
     def __init__(self, topics):
@@ -193,27 +227,33 @@ class MainWidget(QWidget):
         mlay.addWidget(self.viewsFrame)
         mlay.addWidget(self.buttonsFrame)
         
+        self.stopButton = QPushButton('Stop', self.buttonsFrame)
         self.doneButton = QPushButton('Done', self.buttonsFrame)
         self.quitButton = QPushButton('Quit', self.buttonsFrame)
+        blay.addWidget(self.stopButton)
         blay.addWidget(self.doneButton)
         blay.addWidget(self.quitButton)
         
         self.doneButton.clicked.connect(self.handleDone)
+        self.stopButton.clicked.connect(self.handleStop)
         self.quitButton.clicked.connect(self.close)
 
     def handleDone(self, tmp):
-        print "done!"
         for v in self.views:
             v.done()
+
+    def handleStop(self, tmp):
+        for v in self.views:
+            v.stop()
 
 if __name__ == '__main__':
     print ("starting up")
     app = QApplication(sys.argv)
-    w = MainWidget(["/cam_sync/cam0/image_raw",
-                    "/cam_sync/cam1/image_raw",
-                    "/cam_sync/cam2/image_raw",
-                    "/cam_sync/cam3/image_raw",
-                    "/cam_sync/cam4/image_raw"
+    w = MainWidget(["/cam_sync/cam0/image_raw/throttled",
+                    "/cam_sync/cam1/image_raw/throttled",
+                    "/cam_sync/cam2/image_raw/throttled",
+                    "/cam_sync/cam3/image_raw/throttled",
+                    "/cam_sync/cam4/image_raw/throttled"
     ])
     w.show()
     sys.exit(app.exec_())
