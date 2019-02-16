@@ -1,0 +1,18 @@
+<?xml version="1.0"?>
+<package format="2">
+  <name>annotator</name>
+  <version>1.0.0</version>
+  <description>ROS package for multi-view video annotation</description>
+  <maintainer email="bernd.pfrommer@gmail.com">Bernd Pfrommer</maintainer>
+  <license>Apache</license>
+  <buildtool_depend>catkin</buildtool_depend>
+
+  <depend>roscpp</depend>
+  <depend>rosbag</depend>
+  <depend>flex_sync</depend>
+  <depend>ffmpeg_image_transport</depend>
+  <depend>ffmpeg_image_transport_msgs</depend>
+  <depend>sensor_msgs</depend>
+  <depend>message_generation</depend>
+  <depend>message_runtime</depend>
+</package>
