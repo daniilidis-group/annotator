@@ -88,11 +88,10 @@ class AnnotationGraphicsView(ZoomGraphicsView):
             d = 8 # number of pixels in scene
             # pick rectangles close to mouse position
             to_remove = [r for r in self.rectangles if
-                         r.rect().adjusted(-d, -d, d, d).contains(spos)
-                         and  not r.rect().adjusted(d, d, -d, -d).contains(spos)]
+                         r.rect().adjusted(-d, -d, d, d).contains(spos)]
             map(lambda x:self.scene().removeItem(x), to_remove)
-            self.rectangles = [x for x in self.rectangles if x not in to_remove]
-            print 'rectangles removed: ', len(to_remove)
+            self.rectangles = [x for x in self.rectangles
+                               if x not in to_remove]
         QGraphicsView.mousePressEvent(self, event)
 
     def mouseMoveEvent(self, event):
@@ -165,7 +164,7 @@ class ViewWidget(QWidget):
 
         
     def img_callback(self, img):
-        """ img_callback is called directly by the ros worker theread"""
+        """ img_callback is called directly by the ros worker thread"""
         if self.isBusy:
             return # still working on original image
         self.img = img
@@ -176,6 +175,7 @@ class ViewWidget(QWidget):
             return
         height, width, channel = self.cv_img.shape
         bytesPerLine = 3 * width
+        # must make a deep copy here or experience crash!
         q_img = QImage(self.cv_img.data, width, height, bytesPerLine, QImage.Format_RGB888).copy()
         self.signal.emit(q_img)
 
@@ -253,7 +253,10 @@ if __name__ == '__main__':
                     "/cam_sync/cam1/image_raw/throttled",
                     "/cam_sync/cam2/image_raw/throttled",
                     "/cam_sync/cam3/image_raw/throttled",
-                    "/cam_sync/cam4/image_raw/throttled"
+                    "/cam_sync/cam4/image_raw/throttled",
+                    "/cam_sync/cam5/image_raw/throttled",
+                    "/cam_sync/cam6/image_raw/throttled",
+                    "/cam_sync/cam7/image_raw/throttled"
     ])
     w.show()
     sys.exit(app.exec_())
