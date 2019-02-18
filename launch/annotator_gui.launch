@@ -1,0 +1,8 @@
+<?xml version="1.0" encoding="utf-8"?>
+<launch>
+  <arg name="bag"/>
+  <node pkg="annotator" type="annotator_gui.py" name="annotator_gui"
+	clear_params="true" output="screen">
+    <remap from="~command" to="bag_player/command"/>
+  </node>
+</launch>

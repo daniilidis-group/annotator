@@ -8,6 +8,7 @@
   <buildtool_depend>catkin</buildtool_depend>
 
   <depend>roscpp</depend>
+  <depend>rospy</depend>
   <depend>rosbag</depend>
   <depend>flex_sync</depend>
   <depend>ffmpeg_image_transport</depend>

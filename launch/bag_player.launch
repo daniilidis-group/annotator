@@ -1,0 +1,18 @@
+<?xml version="1.0" encoding="utf-8"?>
+<launch>
+  <arg name="bag"/>
+  <node pkg="annotator" type="bag_player" name="bag_player" clear_params="true"
+	output="screen">
+    <param name="bag_file" value="$(arg bag)"/>
+    <rosparam param="image_topics"> [
+    "/cam_sync/cam0/image_raw/ffmpeg",
+    "/cam_sync/cam1/image_raw/ffmpeg",
+    "/cam_sync/cam2/image_raw/ffmpeg",
+    "/cam_sync/cam3/image_raw/ffmpeg",
+    "/cam_sync/cam4/image_raw/ffmpeg",
+    "/cam_sync/cam5/image_raw/ffmpeg",
+    "/cam_sync/cam6/image_raw/ffmpeg",
+    "/cam_sync/cam7/image_raw/ffmpeg"]
+    </rosparam>
+  </node>
+</launch>

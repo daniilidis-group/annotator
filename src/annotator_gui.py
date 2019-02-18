@@ -11,6 +11,7 @@ import rospy
 import cv2
 import numpy as np
 import message_filters
+from annotator.srv import *
 
 from PyQt4.QtCore import *
 from PyQt4.QtGui import *
@@ -133,6 +134,15 @@ class RosWorker(QThread):
             v.maskPub = rospy.Publisher(v.topic + "/mask", Image, queue_size=1)
         self.sync = message_filters.TimeSynchronizer(subs, 10)
         self.sync.registerCallback(self.syncCallback)
+        print "waiting for player node to show up..."
+        svc = '/bag_player/command'
+        rospy.wait_for_service(svc)
+        try:
+            self.playerCommand = rospy.ServiceProxy(svc, PlayerCmd)
+        except rospy.ServiceException as e:
+            print 'cannot connect to service: ', e
+            return
+
         print "finished subscribing to img, spinning now"
         rospy.spin()
         
@@ -226,37 +236,51 @@ class MainWidget(QWidget):
         mlay = QVBoxLayout(self)
         mlay.addWidget(self.viewsFrame)
         mlay.addWidget(self.buttonsFrame)
-        
+
+        self.playButton = QPushButton('Play', self.buttonsFrame)
         self.stopButton = QPushButton('Stop', self.buttonsFrame)
         self.doneButton = QPushButton('Done', self.buttonsFrame)
         self.quitButton = QPushButton('Quit', self.buttonsFrame)
+        blay.addWidget(self.playButton)
         blay.addWidget(self.stopButton)
         blay.addWidget(self.doneButton)
         blay.addWidget(self.quitButton)
-        
-        self.doneButton.clicked.connect(self.handleDone)
+
+        self.playButton.clicked.connect(self.handlePlay)
         self.stopButton.clicked.connect(self.handleStop)
+        self.doneButton.clicked.connect(self.handleDone)
         self.quitButton.clicked.connect(self.close)
+
+    def handlePlay(self, tmp):
+        print 'sending play command!'
+        try:
+            self.rosworker.playerCommand('start', 0.0)
+        except rospy.ServiceException as e:
+            print 'service call failed: ', e
+
+    def handleStop(self, tmp):
+        for v in self.views:
+            v.stop()
+        print 'sending stop command!'
+        try:
+            self.rosworker.playerCommand('stop', 0.0)
+        except rospy.ServiceException as e:
+            print 'service call failed: ', e
 
     def handleDone(self, tmp):
         for v in self.views:
             v.done()
 
-    def handleStop(self, tmp):
-        for v in self.views:
-            v.stop()
-
 if __name__ == '__main__':
     print ("starting up")
     app = QApplication(sys.argv)
-    w = MainWidget(["/cam_sync/cam0/image_raw/throttled",
-                    "/cam_sync/cam1/image_raw/throttled",
-                    "/cam_sync/cam2/image_raw/throttled",
-                    "/cam_sync/cam3/image_raw/throttled",
-                    "/cam_sync/cam4/image_raw/throttled",
-                    "/cam_sync/cam5/image_raw/throttled",
-                    "/cam_sync/cam6/image_raw/throttled",
-                    "/cam_sync/cam7/image_raw/throttled"
-    ])
+    w = MainWidget(["/bag_player/image_0",
+                    "/bag_player/image_1",
+                    "/bag_player/image_2",
+                    "/bag_player/image_3",
+                    "/bag_player/image_4",
+                    "/bag_player/image_5",
+                    "/bag_player/image_6",
+                    "/bag_player/image_7"])
     w.show()
     sys.exit(app.exec_())
