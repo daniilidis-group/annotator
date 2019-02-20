@@ -13,6 +13,7 @@
   <depend>flex_sync</depend>
   <depend>ffmpeg_image_transport</depend>
   <depend>ffmpeg_image_transport_msgs</depend>
+  <depend>audio_common_msgs</depend>
   <depend>sensor_msgs</depend>
   <depend>message_generation</depend>
   <depend>message_runtime</depend>

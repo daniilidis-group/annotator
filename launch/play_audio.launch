@@ -1,0 +1,7 @@
+<launch>
+  <arg name="ns" default="audio"/>
+  <node name="audio_player" pkg="audio_play" type="raw_audio_player"
+	clear_params="true" output="screen">
+    <remap from="~audio_stamped"  to="/bag_player/audio_stamped"/>
+  </node>
+</launch>

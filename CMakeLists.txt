@@ -5,6 +5,7 @@ set(CMAKE_CXX_FLAGS "${CMAKE_CXX_FLAGS} -std=c++11 -g -Wall")
 find_package(catkin REQUIRED COMPONENTS roscpp rospy
 		    rosbag cv_bridge
 		    image_transport ffmpeg_image_transport_msgs
+		    audio_common_msgs
 		    ffmpeg_image_transport
 		    sensor_msgs flex_sync message_generation)
 

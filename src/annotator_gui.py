@@ -128,10 +128,15 @@ class RosWorker(QThread):
         rospy.init_node('annotator', disable_signals=True)
         subs = []
         for v in self.views:
-            v.sub = message_filters.Subscriber(v.topic, Image)
+            v.sub = message_filters.Subscriber(v.topic, Image, queue_size = 10)
             subs.append(v.sub)
-            v.rectPub = rospy.Publisher(v.topic + "/rect", RectList, queue_size=1)
-            v.maskPub = rospy.Publisher(v.topic + "/mask", Image, queue_size=1)
+            v.rectPub = rospy.Publisher(v.topic + "/rect", RectList,
+                                        queue_size=1)
+            v.maskPub = rospy.Publisher(v.topic + "/mask", Image,
+                                        queue_size=1)
+            # for the monitoring topic, register a separater callback
+            if v.isMonitor:
+                v.sub.registerCallback(v.img_callback)
         self.sync = message_filters.TimeSynchronizer(subs, 10)
         self.sync.registerCallback(self.syncCallback)
         print "waiting for player node to show up..."
@@ -144,16 +149,20 @@ class RosWorker(QThread):
             return
 
         print "finished subscribing to img, spinning now"
-        rospy.spin()
-        
+        rospy.spin() # this call never returns
+
     def syncCallback(self, *arg):
+        print "got sync callback!"
         for i in range(0, len(self.views)):
             self.views[i].img_callback(arg[i])
 
 class ViewWidget(QWidget):
     signal = pyqtSignal(QImage)
-    def __init__(self, parent=None, topic = ""):
+    timeChanged = pyqtSignal(genpy.rostime.Time)
+    def __init__(self, parent=None, topic = "", is_monitor = False):
         QWidget.__init__(self, parent)
+        self.mainGui   = parent
+        self.isMonitor = is_monitor;
         self.bridge = CvBridge()
         self.topic = topic
         self.scene = QGraphicsScene(self)
@@ -166,12 +175,20 @@ class ViewWidget(QWidget):
         self.isBusy = False
         lay = QHBoxLayout(self)
         lay.addWidget(self.gv)
+        
+        # connect image update to myself. This is
+        # to separate the work so the image update is done
+        # in the gui thread, not the ROS thread.
         self.signal.connect(self.handle_img_update)
+        
+        # connect timeChanged to the main gui, same
+        # reason as above
+        self.timeChanged.connect(self.mainGui.handleTimeChanged)
 
     def handle_img_update(self, img):
+        """ handle_img_update is run by the GUI thread """
         self.p_item.setPixmap(QPixmap.fromImage(img))
         self.gv.fitInView(self.scene.sceneRect())
-
         
     def img_callback(self, img):
         """ img_callback is called directly by the ros worker thread"""
@@ -188,6 +205,12 @@ class ViewWidget(QWidget):
         # must make a deep copy here or experience crash!
         q_img = QImage(self.cv_img.data, width, height, bytesPerLine, QImage.Format_RGB888).copy()
         self.signal.emit(q_img)
+        #
+        # if this is the monitoring gui, emit the time stamp so
+        # it updates at the bottom of the main gui
+        #
+        if (self.isMonitor):
+            self.timeChanged.emit(img.header.stamp)
 
     def done(self):
         if not self.img:
@@ -217,12 +240,18 @@ class ViewWidget(QWidget):
     def stop(self):
         self.isBusy = True
 
+    def handlePlayMode(self):
+        
         
 class MainWidget(QWidget):
-    def __init__(self, topics):
+    def __init__(self, sync_img_topics, img_topic):
         QWidget.__init__(self, None)
         print "starting ros worker thread!"
-        self.views = [ViewWidget(self, t) for t in topics]
+        if not img_topic in sync_img_topics:
+            raise Exception(img_topic + ' must be in sync image topics!')
+        
+        self.time  = None
+        self.views = [ViewWidget(self, t, t == img_topic) for t in sync_img_topics]
         self.rosworker = RosWorker(main_gui = self, views = self.views)
         self.rosworker.start()
         self.viewsFrame = QFrame(self)
@@ -237,39 +266,92 @@ class MainWidget(QWidget):
         mlay.addWidget(self.viewsFrame)
         mlay.addWidget(self.buttonsFrame)
 
+        self.timeField  = QLineEdit(self.buttonsFrame)
+        self.timeField.setMaxLength(20)
+        self.timeField.setMaximumWidth(200)
         self.playButton = QPushButton('Play', self.buttonsFrame)
         self.stopButton = QPushButton('Stop', self.buttonsFrame)
+        self.backButton = QPushButton('Back', self.buttonsFrame)
+        self.timeStep   = QSpinBox(self.buttonsFrame)
+        self.timeStep.setSingleStep(1)
+        self.timeStep.setRange(1,100)
+        
+        self.forwardButton = QPushButton('Forward', self.buttonsFrame)
+        self.duration   = QSpinBox(self.buttonsFrame)
+        self.duration.setSingleStep(1)
+        self.duration.setRange(1,100)
+        self.replayButton = QPushButton('Replay', self.buttonsFrame)
+        
         self.doneButton = QPushButton('Done', self.buttonsFrame)
         self.quitButton = QPushButton('Quit', self.buttonsFrame)
+        
+        # lay them out from from left to right
+        blay.addWidget(self.timeField)
         blay.addWidget(self.playButton)
+        blay.addWidget(self.timeStep)
         blay.addWidget(self.stopButton)
+        blay.addWidget(self.backButton)
+        blay.addWidget(self.timeStep)
+        blay.addWidget(self.forwardButton)
+        blay.addWidget(self.duration)
+        blay.addWidget(self.replayButton)
         blay.addWidget(self.doneButton)
         blay.addWidget(self.quitButton)
 
         self.playButton.clicked.connect(self.handlePlay)
         self.stopButton.clicked.connect(self.handleStop)
+        self.backButton.clicked.connect(self.handleBack)
+        self.forwardButton.clicked.connect(self.handleForward)
+        self.replayButton.clicked.connect(self.handleReplay)
         self.doneButton.clicked.connect(self.handleDone)
         self.quitButton.clicked.connect(self.close)
 
-    def handlePlay(self, tmp):
-        print 'sending play command!'
+    def sendCmd(self, cmd, v, t):
         try:
-            self.rosworker.playerCommand('start', 0.0)
+            self.rosworker.playerCommand(cmd, v, t)
         except rospy.ServiceException as e:
             print 'service call failed: ', e
 
-    def handleStop(self, tmp):
+    # this decorator was necessary to make it work
+    @pyqtSlot(genpy.rostime.Time)
+    def handleTimeChanged(self, t):
+        self.time = t
+        self.timeField.setText(str(t.to_sec()))
+
+    def updateTime(self, delta):
+        self.time = self.time - rospy.Duration(delta)
+        self.timeField.setText(str(self.time.to_sec()))
+    
+    def handleBack(self):
+        if self.time:
+            self.updateTime(-self.timeStep.value())
+            self.sendCmd('position', 0, self.time)
+
+    def handleForward(self):
+        if self.time:
+            self.updateTime(self.timeStep.value())
+            self.sendCmd('position', 0, self.time)
+
+    def handleReplay(self):
+        if self.time:
+            for v in self.views:
+                v.setReplayMode()
+            self.updateTime(-self.duration.value())
+            self.sendCmd('replay', float(self.duration.value()), self.time)
+        
+    def handlePlay(self, tmp):
         for v in self.views:
-            v.stop()
-        print 'sending stop command!'
-        try:
-            self.rosworker.playerCommand('stop', 0.0)
-        except rospy.ServiceException as e:
-            print 'service call failed: ', e
+            v.setPlayMode()
+        self.sendCmd('play', 0, rospy.Time(0))
+
+    def handleStop(self, tmp):
+        if self.time:
+            self.sendCmd('stop', 0, rospy.Time(0))
 
     def handleDone(self, tmp):
         for v in self.views:
             v.done()
+    
 
 if __name__ == '__main__':
     print ("starting up")
@@ -281,6 +363,8 @@ if __name__ == '__main__':
                     "/bag_player/image_4",
                     "/bag_player/image_5",
                     "/bag_player/image_6",
-                    "/bag_player/image_7"])
+                    "/bag_player/image_7"],
+                   "/bag_player/image_2"
+    )
     w.show()
     sys.exit(app.exec_())

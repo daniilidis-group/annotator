@@ -4,6 +4,8 @@
   <node pkg="annotator" type="bag_player" name="bag_player" clear_params="true"
 	output="screen">
     <param name="bag_file" value="$(arg bag)"/>
+    <param name="audio_topic" value="/audio/audio_stamped"/>
+    <param name="monitor_topic" value="/cam_sync/cam2/image_raw/ffmpeg"/>
     <rosparam param="image_topics"> [
     "/cam_sync/cam0/image_raw/ffmpeg",
     "/cam_sync/cam1/image_raw/ffmpeg",
