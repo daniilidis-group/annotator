@@ -82,6 +82,7 @@ namespace annotator {
     SessionMap          sessions_;
     rosbag::Bag         bag_;
     ros::Publisher      audioPub_;
+    ros::Publisher      clockPub_;
     ros::Time           currentTime_{ros::Time(0)};
     string              audioTopic_;
     std::vector<string> imageTopics_;

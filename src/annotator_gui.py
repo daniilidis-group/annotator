@@ -10,8 +10,8 @@ import roslib
 import rospy
 import cv2
 import numpy as np
-import message_filters
 from annotator.srv import *
+from flex_sync import Sync
 
 from PyQt4.QtCore import *
 from PyQt4.QtGui import *
@@ -23,6 +23,8 @@ from bird_recording.msg import RectList
 from bird_recording.msg import Rect
 
 class ZoomGraphicsView(QGraphicsView):
+    """ The ZoomGraphicssView is regular QGraphicsView, but
+    with the wheel events used to zoom in/out """
     def __init__ (self, parent=None):
         super(ZoomGraphicsView, self).__init__ (parent)
     def wheelEvent(self, event):
@@ -52,6 +54,10 @@ class ZoomGraphicsView(QGraphicsView):
         self.translate(delta.x(), delta.y())
 
 class AnnotationGraphicsView(ZoomGraphicsView):
+    """ AnnotationGraphicsView has the logic for rectangle markup:
+    - left button hold and drag creates rectangle
+    - right mouse button click on rectangle erases it
+    """
 
     def __init__ (self, listener, pixmap, parent=None):
         super(AnnotationGraphicsView, self).__init__ (parent)
@@ -115,46 +121,54 @@ class AnnotationGraphicsView(ZoomGraphicsView):
 
         QGraphicsView.mouseReleaseEvent(self, event)
         
-
-
 class RosWorker(QThread):
+    """ The RosWorker is a thread that services the ROS event loop.
+    Careful when interacting with the main GUI loop, you need to either lock
+    (and face the risk of deadlock), or emit signals when interacting with
+    the main GUI thread"""
     def __init__(self, main_gui, views):
         QThread.__init__(self, parent=None)
         self.main_gui = main_gui
         self.views = views
+    def __del__(self):
+        self.wait()
     def run(self):
-        def __del__(self):
-            self.wait()
+        """ entry point for the ROS worker thread """
+        #
+        # do all the subscriptions and ROS based stuff in this thread
+        #
+        
         rospy.init_node('annotator', disable_signals=True)
-        subs = []
+        #
+        # the sync will be directly called by each view. Once an image
+        # is complete, the sync will call syncCallback
+        #
+        self.sync = Sync([v.topic for v in self.views], self.syncCallback)
         for v in self.views:
-            v.sub = message_filters.Subscriber(v.topic, Image, queue_size = 10)
-            subs.append(v.sub)
-            v.rectPub = rospy.Publisher(v.topic + "/rect", RectList,
-                                        queue_size=1)
-            v.maskPub = rospy.Publisher(v.topic + "/mask", Image,
-                                        queue_size=1)
-            # for the monitoring topic, register a separater callback
-            if v.isMonitor:
-                v.sub.registerCallback(v.img_callback)
-        self.sync = message_filters.TimeSynchronizer(subs, 10)
-        self.sync.registerCallback(self.syncCallback)
-        print "waiting for player node to show up..."
+            v.sub = rospy.Subscriber(v.topic, Image, v.img_callback, queue_size = 10)
+            v.rectPub = rospy.Publisher(v.topic + "/rect", RectList, queue_size = 2)
+            v.maskPub = rospy.Publisher(v.topic + "/mask", Image, queue_size = 2)
+            v.sync    = self.sync
         svc = '/bag_player/command'
+        rospy.loginfo("looking for rosbag_player node service as " + svc)
         rospy.wait_for_service(svc)
         try:
             self.playerCommand = rospy.ServiceProxy(svc, PlayerCmd)
+            rospy.loginfo('found service ' + svc)
         except rospy.ServiceException as e:
-            print 'cannot connect to service: ', e
+            rospy.logerr('cannot connect to service: ' + str(e))
             return
 
-        print "finished subscribing to img, spinning now"
+        rospy.loginfo("finished subscribing to img, spinning now")
         rospy.spin() # this call never returns
 
-    def syncCallback(self, *arg):
-        print "got sync callback!"
+    def resetSync(self):
+        self.sync.reset()
+    
+    def syncCallback(self, msgvec):
+        rospy.loginfo('got sync callback for time: %.3f' % msgvec[0].header.stamp.to_sec())
         for i in range(0, len(self.views)):
-            self.views[i].img_callback(arg[i])
+            self.views[i].sync_img_callback(msgvec[i])
 
 class ViewWidget(QWidget):
     signal = pyqtSignal(QImage)
@@ -162,7 +176,7 @@ class ViewWidget(QWidget):
     def __init__(self, parent=None, topic = "", is_monitor = False):
         QWidget.__init__(self, parent)
         self.mainGui   = parent
-        self.isMonitor = is_monitor;
+        self.isMonitor = is_monitor
         self.bridge = CvBridge()
         self.topic = topic
         self.scene = QGraphicsScene(self)
@@ -171,8 +185,10 @@ class ViewWidget(QWidget):
         self.gv.setScene(self.scene) 
         self.gv.setRenderHints(QPainter.Antialiasing | QPainter.SmoothPixmapTransform)
         self.gv.fitInView(self.scene.sceneRect())
-        self.img = None
-        self.isBusy = False
+        #
+        self.img_msg = None
+        self.state = "playing"
+        self.sync = None
         lay = QHBoxLayout(self)
         lay.addWidget(self.gv)
         
@@ -185,20 +201,29 @@ class ViewWidget(QWidget):
         # reason as above
         self.timeChanged.connect(self.mainGui.handleTimeChanged)
 
+    def setState(self, s):
+        self.state = s
+        if self.state == 'playing' and not self.isMonitor:
+            self.hide()
+        if self.state == 'replaying':
+            self.mainGui.rosworker.resetSync()
+            self.show()
+
+        
     def handle_img_update(self, img):
         """ handle_img_update is run by the GUI thread """
         self.p_item.setPixmap(QPixmap.fromImage(img))
         self.gv.fitInView(self.scene.sceneRect())
         
-    def img_callback(self, img):
-        """ img_callback is called directly by the ros worker thread"""
-        if self.isBusy:
-            return # still working on original image
-        self.img = img
+    def postImage(self, msg):
+        """ this function is called directly by the ros worker thread,
+            don't do any GUI work here
+        """
+        self.img_msg = msg
         try:
-            self.cv_img = self.bridge.imgmsg_to_cv2(img, "rgb8")
+            self.cv_img = self.bridge.imgmsg_to_cv2(msg, "rgb8")
         except CvBridgeError as e:
-            print(e)
+            rospy.logerr(e)
             return
         height, width, channel = self.cv_img.shape
         bytesPerLine = 3 * width
@@ -210,14 +235,38 @@ class ViewWidget(QWidget):
         # it updates at the bottom of the main gui
         #
         if (self.isMonitor):
-            self.timeChanged.emit(img.header.stamp)
+            self.timeChanged.emit(msg.header.stamp)
 
-    def done(self):
-        if not self.img:
-            print 'no image received yet'
+    def img_callback(self, msg):
+        """ img_callback is called directly by the ros worker thread,
+        don't do any GUI work here
+        """
+        if self.state == "playing":
+            self.postImage(msg)
+        elif self.state == "replaying":
+            self.sync.process(self.topic, msg)
+        else:
+            rospy.logerr("invalid state: " + self.state)
+
+    def sync_img_callback(self, msg):
+        """ sync_img_callback is called directly by the ros worker thread,
+        don't do any GUI work here.
+        It is called when a complete image is present.
+        """
+        if self.state == "playing":
+            rospy.logerr("got sync callback in playing state!!")
+        elif self.state == "replaying":
+            self.postImage(msg)
+        else:
+            rospy.logerr("invalid state!")
+
+    def publish(self):
+        """ publish is called when the markup is completed"""
+        if not self.img_msg:
+            rospy.loginfo('no image received yet')
             return
         rl = RectList()
-        rl.header = self.img.header
+        rl.header = self.img_msg.header
         mask = np.zeros(self.cv_img.shape[:2], np.uint8)
         for qri in self.gv.rectangles:
             qr = qri.rect()
@@ -228,25 +277,20 @@ class ViewWidget(QWidget):
             mask[y:y+h, x:x+w] = 255
             r = Rect(x=x, y=y, width=qr.width(), height=qr.height())
             rl.rectangles.append(r)
+            rospy.loginfo(self.topic + " rect: [x=%d, y=%d, w=%d h=%d] " \
+                          % (x,w,qr.width(), qr.height()))
         self.gv.clearRectangles()
-        print self.topic, ' publish rects: ', len(rl.rectangles)
         self.rectPub.publish(rl)
         msg = self.bridge.cv2_to_imgmsg(mask, "mono8")
-        msg.header = self.img.header
+        msg.header = self.img_msg.header
         self.maskPub.publish(msg)
-        self.img = None
-        self.isBusy = False
 
-    def stop(self):
-        self.isBusy = True
-
-    def handlePlayMode(self):
-        
         
 class MainWidget(QWidget):
+    """ MainWidget is the full GUI, including everything: the views and the buttons"""
     def __init__(self, sync_img_topics, img_topic):
         QWidget.__init__(self, None)
-        print "starting ros worker thread!"
+        rospy.loginfo("starting ros worker thread!")
         if not img_topic in sync_img_topics:
             raise Exception(img_topic + ' must be in sync image topics!')
         
@@ -282,7 +326,7 @@ class MainWidget(QWidget):
         self.duration.setRange(1,100)
         self.replayButton = QPushButton('Replay', self.buttonsFrame)
         
-        self.doneButton = QPushButton('Done', self.buttonsFrame)
+        self.publishButton = QPushButton('Publish', self.buttonsFrame)
         self.quitButton = QPushButton('Quit', self.buttonsFrame)
         
         # lay them out from from left to right
@@ -295,7 +339,7 @@ class MainWidget(QWidget):
         blay.addWidget(self.forwardButton)
         blay.addWidget(self.duration)
         blay.addWidget(self.replayButton)
-        blay.addWidget(self.doneButton)
+        blay.addWidget(self.publishButton)
         blay.addWidget(self.quitButton)
 
         self.playButton.clicked.connect(self.handlePlay)
@@ -303,14 +347,15 @@ class MainWidget(QWidget):
         self.backButton.clicked.connect(self.handleBack)
         self.forwardButton.clicked.connect(self.handleForward)
         self.replayButton.clicked.connect(self.handleReplay)
-        self.doneButton.clicked.connect(self.handleDone)
+        self.publishButton.clicked.connect(self.handlePublish)
         self.quitButton.clicked.connect(self.close)
 
     def sendCmd(self, cmd, v, t):
+        """ sendCmd sends a command to the player"""
         try:
             self.rosworker.playerCommand(cmd, v, t)
         except rospy.ServiceException as e:
-            print 'service call failed: ', e
+            rospy.logerr('service call failed: ' + str(e))
 
     # this decorator was necessary to make it work
     @pyqtSlot(genpy.rostime.Time)
@@ -319,7 +364,7 @@ class MainWidget(QWidget):
         self.timeField.setText(str(t.to_sec()))
 
     def updateTime(self, delta):
-        self.time = self.time - rospy.Duration(delta)
+        self.time = self.time + rospy.Duration(delta)
         self.timeField.setText(str(self.time.to_sec()))
     
     def handleBack(self):
@@ -335,36 +380,36 @@ class MainWidget(QWidget):
     def handleReplay(self):
         if self.time:
             for v in self.views:
-                v.setReplayMode()
+                v.setState('replaying')
             self.updateTime(-self.duration.value())
             self.sendCmd('replay', float(self.duration.value()), self.time)
         
     def handlePlay(self, tmp):
         for v in self.views:
-            v.setPlayMode()
+            v.setState('playing')
         self.sendCmd('play', 0, rospy.Time(0))
 
     def handleStop(self, tmp):
         if self.time:
             self.sendCmd('stop', 0, rospy.Time(0))
 
-    def handleDone(self, tmp):
+    def handlePublish(self, tmp):
         for v in self.views:
-            v.done()
+            v.publish()
     
 
 if __name__ == '__main__':
-    print ("starting up")
+    rospy.loginfo("starting up")
     app = QApplication(sys.argv)
-    w = MainWidget(["/bag_player/image_0",
-                    "/bag_player/image_1",
+    w = MainWidget(["/bag_player/image_3",
                     "/bag_player/image_2",
-                    "/bag_player/image_3",
-                    "/bag_player/image_4",
-                    "/bag_player/image_5",
                     "/bag_player/image_6",
-                    "/bag_player/image_7"],
-                   "/bag_player/image_2"
+                    "/bag_player/image_7",
+                    "/bag_player/image_0",
+                    "/bag_player/image_1",
+                    "/bag_player/image_4",
+                    "/bag_player/image_5",],
+                   "/bag_player/image_2" # monitoring view
     )
     w.show()
     sys.exit(app.exec_())

@@ -11,6 +11,7 @@
 #include <boost/range/irange.hpp>
 #include <iomanip>
 #include <climits>
+#include <rosgraph_msgs/Clock.h>
 
 
 namespace annotator {
@@ -107,6 +108,7 @@ namespace annotator {
       ROS_ERROR("no image topics found!");
       return (false);
     }
+
     std::vector<std::vector<string>> tp(1, imageTopics_);
     sync_.reset(
       new Sync(tp, boost::bind(&BagPlayer::syncCallback, this, _1)));
@@ -120,6 +122,7 @@ namespace annotator {
       return (false);
     }
     audioPub_ = nh_.advertise<AudioDataStamped>("audio_stamped", 100);
+    clockPub_ = nh_.advertise<rosgraph_msgs::Clock>("/clock", 1);
     cmdService_ = nh_.advertiseService("command", &BagPlayer::command, this);
 
     thread_ = std::make_shared<std::thread>(&BagPlayer::mainThread, this);
@@ -170,9 +173,9 @@ namespace annotator {
           ROS_WARN_STREAM("falling behind ros time: " << aheadTime);
         }
         if (ros::Duration(aheadTime) - sleepTime > audioBufferTime_) {
-          ROS_INFO_STREAM("sleeping for " << sleepTime);
+          //ROS_INFO_STREAM("sleeping for " << sleepTime);
           // sleep until wall time has caught up with ros time
-          sleepTime.sleep();
+          ros::WallTime::sleepUntil(tw + ros::WallDuration(sleepTime.toSec()));
         }
       }
       if (msg) {
@@ -186,6 +189,10 @@ namespace annotator {
         audioPub_.publish(audio);
       }
       currentTime_ = m.getTime();
+      rosgraph_msgs::Clock clockMsg;
+      clockMsg.clock = currentTime_;
+      clockPub_.publish(clockMsg);
+
       if (!ros::ok()) {
         break;
       }

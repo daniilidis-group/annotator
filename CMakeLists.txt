@@ -7,8 +7,8 @@ find_package(catkin REQUIRED COMPONENTS roscpp rospy
 		    image_transport ffmpeg_image_transport_msgs
 		    audio_common_msgs
 		    ffmpeg_image_transport
+		    rosgraph_msgs
 		    sensor_msgs flex_sync message_generation)
-
 
 add_service_files(DIRECTORY srv FILES PlayerCmd.srv)
 
